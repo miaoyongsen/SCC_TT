@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -102,11 +102,11 @@ class PendingItem:
     future: asyncio.Future[None]
 
 
-write_queue: asyncio.Queue[PendingItem | None] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
-writer_task: asyncio.Task[None] | None = None
+write_queue: asyncio.Queue[Optional[PendingItem]] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
+writer_task: Optional[asyncio.Task] = None
 
 
-def persist_batch(items: list[PendingItem]) -> None:
+def persist_batch(items: List[PendingItem]) -> None:
     # A single transaction for a batch substantially reduces per-event disk overhead.
     with db_connection() as conn:
         for item in items:
@@ -190,7 +190,7 @@ app = FastAPI(title="SCC_TT Webhook Receiver", version="1.1.0", lifespan=lifespa
 @app.post("/webhook")
 async def receive_webhook(
     request: Request,
-    x_webhook_token: str | None = Header(default=None),
+    x_webhook_token: Optional[str] = Header(default=None),
 ) -> JSONResponse:
     if WEBHOOK_TOKEN and x_webhook_token != WEBHOOK_TOKEN:
         raise HTTPException(status_code=401, detail="invalid webhook token")
