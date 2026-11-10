@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import os
 import re
 import sqlite3
-import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import AsyncIterator
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -24,8 +25,14 @@ LOG_DIR = Path(os.getenv("LOG_DIR", str(BASE_DIR / "logs"))).resolve()
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8081"))
 MAX_BODY_BYTES = int(os.getenv("MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+QUEUE_MAX_SIZE = int(os.getenv("QUEUE_MAX_SIZE", "5000"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "200"))
+BATCH_WAIT_MS = int(os.getenv("BATCH_WAIT_MS", "10"))
 WEBHOOK_TOKEN = os.getenv("WEBHOOK_TOKEN", "").strip()
 TIMEZONE = ZoneInfo(os.getenv("TIMEZONE", "Asia/Shanghai"))
+
+if QUEUE_MAX_SIZE < 1 or BATCH_SIZE < 1 or BATCH_WAIT_MS < 0:
+    raise ValueError("QUEUE_MAX_SIZE and BATCH_SIZE must be positive; BATCH_WAIT_MS cannot be negative")
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,9 +46,6 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("scc_tt")
-write_lock = threading.Lock()
-
-app = FastAPI(title="SCC_TT Webhook Receiver", version="1.0.0")
 
 
 def now_local() -> datetime:
@@ -49,18 +53,17 @@ def now_local() -> datetime:
 
 
 def table_name(month: str) -> str:
-    if not re.fullmatch(r"\\d{6}", month):
-        raise HTTPException(status_code=400, detail="month must use YYYYMM format")
+    if not re.fullmatch(r"\d{6}", month):
+        raise ValueError("month must use YYYYMM format")
     year, mm = int(month[:4]), int(month[4:])
     if year < 2000 or not 1 <= mm <= 12:
-        raise HTTPException(status_code=400, detail="invalid month")
+        raise ValueError("invalid month")
     return f"webhook_{month}"
 
 
 @contextmanager
 def db_connection():
     conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level="DEFERRED")
-    conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.execute("PRAGMA synchronous = FULL")
@@ -72,16 +75,6 @@ def db_connection():
 def initialize_database() -> None:
     with db_connection() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
-        # FULL is more conservative for durability before acknowledging a webhook.
-        conn.execute("PRAGMA synchronous = FULL")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_meta "
-            "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO schema_meta(key, value) "
-            "VALUES('schema_version', '1')"
-        )
         conn.commit()
 
 
@@ -91,36 +84,107 @@ def ensure_month_table(conn: sqlite3.Connection, month: str) -> str:
         f'''CREATE TABLE IF NOT EXISTS "{table}" (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             content TEXT NOT NULL,
-            received_at TEXT NOT NULL,
-            pushed INTEGER NOT NULL DEFAULT 0 CHECK (pushed IN (0, 1))
+            received_at TEXT NOT NULL
         )'''
     )
     conn.execute(
         f'CREATE INDEX IF NOT EXISTS "idx_{table}_received_at" '
         f'ON "{table}"(received_at)'
     )
-    conn.execute(
-        f'CREATE INDEX IF NOT EXISTS "idx_{table}_pushed" '
-        f'ON "{table}"(pushed)'
-    )
     return table
 
 
-@app.on_event("startup")
-def startup() -> None:
+@dataclass
+class PendingItem:
+    content: str
+    received_at: str
+    month: str
+    future: asyncio.Future[None]
+
+
+write_queue: asyncio.Queue[PendingItem | None] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
+writer_task: asyncio.Task[None] | None = None
+
+
+def persist_batch(items: list[PendingItem]) -> None:
+    # A single transaction for a batch substantially reduces per-event disk overhead.
+    with db_connection() as conn:
+        for item in items:
+            table = ensure_month_table(conn, item.month)
+            conn.execute(
+                f'INSERT INTO "{table}" (content, received_at) VALUES (?, ?)',
+                (item.content, item.received_at),
+            )
+        conn.commit()
+
+
+async def database_writer() -> None:
+    logger.info(
+        "database writer started: queue=%s batch=%s wait_ms=%s",
+        QUEUE_MAX_SIZE, BATCH_SIZE, BATCH_WAIT_MS,
+    )
+    stopping = False
+    while not stopping:
+        first = await write_queue.get()
+        if first is None:
+            write_queue.task_done()
+            break
+
+        batch = [first]
+        deadline = asyncio.get_running_loop().time() + BATCH_WAIT_MS / 1000
+
+        while len(batch) < BATCH_SIZE:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+            try:
+                item = await asyncio.wait_for(write_queue.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            if item is None:
+                write_queue.task_done()
+                stopping = True
+                break
+            batch.append(item)
+
+        try:
+            await run_in_threadpool(persist_batch, batch)
+        except Exception as exc:
+            logger.exception("SQLite batch write failed; rejecting %s webhook(s)", len(batch))
+            for item in batch:
+                if not item.future.done():
+                    item.future.set_exception(exc)
+        else:
+            # A webhook is acknowledged only after its batch transaction is committed.
+            for item in batch:
+                if not item.future.done():
+                    item.future.set_result(None)
+        finally:
+            for _ in batch:
+                write_queue.task_done()
+
+    logger.info("database writer stopped")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    global writer_task
     initialize_database()
     if not WEBHOOK_TOKEN:
-        logger.warning(
-            "WEBHOOK_TOKEN is not configured; webhook endpoint accepts unauthenticated requests"
-        )
+        logger.warning("WEBHOOK_TOKEN is not configured; webhook endpoint accepts unauthenticated requests")
+    writer_task = asyncio.create_task(database_writer(), name="sqlite-batch-writer")
     logger.info("SCC_TT started; database=%s", DB_PATH)
+    try:
+        yield
+    finally:
+        # Drain accepted events and flush them before process shutdown.
+        await write_queue.put(None)
+        if writer_task is not None:
+            await writer_task
+            writer_task = None
 
 
-@app.get("/health")
-def health() -> dict[str, Any]:
-    with db_connection() as conn:
-        conn.execute("SELECT 1").fetchone()
-    return {"status": "ok", "service": "SCC_TT", "time": now_local().isoformat()}
+app = FastAPI(title="SCC_TT Webhook Receiver", version="1.1.0", lifespan=lifespan)
 
 
 @app.post("/webhook")
@@ -133,14 +197,11 @@ async def receive_webhook(
 
     body = await request.body()
     if len(body) > MAX_BODY_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"payload too large; limit is {MAX_BODY_BYTES} bytes",
-        )
+        raise HTTPException(status_code=413, detail=f"payload too large; limit is {MAX_BODY_BYTES} bytes")
     if not body:
         raise HTTPException(status_code=400, detail="empty request body")
 
-    # Preserve valid UTF-8 payloads exactly; encode binary payloads losslessly.
+    # Keep UTF-8 request bodies byte-for-byte as text; preserve binary payloads as base64.
     try:
         content = body.decode("utf-8")
     except UnicodeDecodeError:
@@ -151,149 +212,20 @@ async def receive_webhook(
     received_dt = now_local()
     received_at = received_dt.isoformat(timespec="milliseconds")
     month = received_dt.strftime("%Y%m")
-
-    def persist() -> int:
-        # Single-process lock + one Uvicorn worker prevents local write races.
-        with write_lock:
-            with db_connection() as conn:
-                table = ensure_month_table(conn, month)
-                cursor = conn.execute(
-                    f'INSERT INTO "{table}" (content, received_at, pushed) '
-                    "VALUES (?, ?, 0)",
-                    (content, received_at),
-                )
-                conn.commit()
-                return int(cursor.lastrowid)
+    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    item = PendingItem(content, received_at, month, future)
 
     try:
-        record_id = await run_in_threadpool(persist)
+        # Backpressure: if the bounded queue is full, wait instead of dropping payloads.
+        await write_queue.put(item)
+        await future
         return JSONResponse(
             status_code=200,
-            content={
-                "ok": True,
-                "id": record_id,
-                "month": month,
-                "received_at": received_at,
-            },
+            content={"ok": True, "received_at": received_at},
         )
     except sqlite3.Error:
         logger.exception("failed to persist webhook payload")
-        raise HTTPException(
-            status_code=503,
-            detail="storage temporarily unavailable; sender should retry",
-        )
-
-
-@app.get("/records")
-def list_records(
-    month: str | None = Query(default=None, description="YYYYMM; defaults to current month"),
-    pushed: int | None = Query(default=None, ge=0, le=1),
-    limit: int = Query(default=100, ge=1, le=1000),
-    offset: int = Query(default=0, ge=0),
-) -> dict[str, Any]:
-    month = month or now_local().strftime("%Y%m")
-    table = table_name(month)
-    where = " WHERE pushed = ?" if pushed is not None else ""
-    filter_params: list[Any] = [pushed] if pushed is not None else []
-    with db_connection() as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if not exists:
-            return {
-                "month": month,
-                "total": 0,
-                "limit": limit,
-                "offset": offset,
-                "items": [],
-            }
-        total = conn.execute(
-            f'SELECT COUNT(*) FROM "{table}"{where}', filter_params
-        ).fetchone()[0]
-        rows = conn.execute(
-            f'SELECT id, content, received_at, pushed FROM "{table}"{where} '
-            "ORDER BY id DESC LIMIT ? OFFSET ?",
-            [*filter_params, limit, offset],
-        ).fetchall()
-    return {
-        "month": month,
-        "total": total,
-        "limit": limit,
-        "offset": offset,
-        "items": [dict(row) for row in rows],
-    }
-
-
-@app.get("/records/{record_id}")
-def get_record(
-    record_id: int,
-    month: str = Query(..., description="Month in YYYYMM format"),
-) -> dict[str, Any]:
-    table = table_name(month)
-    with db_connection() as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if not exists:
-            raise HTTPException(status_code=404, detail="record not found")
-        row = conn.execute(
-            f'SELECT id, content, received_at, pushed FROM "{table}" WHERE id=?',
-            (record_id,),
-        ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="record not found")
-    return dict(row)
-
-
-@app.patch("/records/{record_id}/push-status")
-def update_push_status(
-    record_id: int,
-    month: str = Query(..., description="Month in YYYYMM format"),
-    pushed: int = Query(..., ge=0, le=1),
-) -> dict[str, Any]:
-    table = table_name(month)
-    with write_lock:
-        with db_connection() as conn:
-            exists = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (table,),
-            ).fetchone()
-            if not exists:
-                raise HTTPException(status_code=404, detail="record not found")
-            cursor = conn.execute(
-                f'UPDATE "{table}" SET pushed=? WHERE id=?',
-                (pushed, record_id),
-            )
-            conn.commit()
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="record not found")
-    return {"ok": True, "id": record_id, "month": month, "pushed": pushed}
-
-
-@app.get("/stats")
-def stats(
-    month: str | None = Query(default=None, description="YYYYMM; defaults to current month"),
-) -> dict[str, Any]:
-    month = month or now_local().strftime("%Y%m")
-    table = table_name(month)
-    with db_connection() as conn:
-        exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
-        if not exists:
-            return {"month": month, "total": 0, "pending": 0, "pushed": 0}
-        row = conn.execute(
-            f'SELECT COUNT(*) AS total, '
-            f'SUM(CASE WHEN pushed=0 THEN 1 ELSE 0 END) AS pending, '
-            f'SUM(CASE WHEN pushed=1 THEN 1 ELSE 0 END) AS pushed '
-            f'FROM "{table}"'
-        ).fetchone()
-    return {
-        "month": month,
-        "total": row["total"],
-        "pending": row["pending"] or 0,
-        "pushed": row["pushed"] or 0,
-    }
+        raise HTTPException(status_code=503, detail="storage temporarily unavailable; sender should retry")
+    except Exception:
+        logger.exception("unexpected webhook receive failure")
+        raise HTTPException(status_code=503, detail="receiver temporarily unavailable; sender should retry")
