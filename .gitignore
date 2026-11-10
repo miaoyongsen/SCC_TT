@@ -1,1 +1,1 @@
-__pycache__/\n*.py[cod]\n.venv/\nvenv/\n.env\ndata/\nlogs/\n*.db\n*.db-shm\n*.db-wal\n.pytest_cache/\n
+__pycache__/\n*.py[cod]\n.venv/\nvenv/\n.env\ndata/\nlogs/\n*.db\n*.db-shm\n*.db-wal\n.pytest_cache/\nrun/
