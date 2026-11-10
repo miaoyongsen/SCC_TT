@@ -63,6 +63,7 @@ def db_connection():
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA synchronous = FULL")
         yield conn
     finally:
         conn.close()
