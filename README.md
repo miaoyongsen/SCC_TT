@@ -64,3 +64,23 @@ curl -X POST http://127.0.0.1:8081/webhook \
 - 若进程在请求入队后、事务提交前崩溃，该请求不会收到成功响应；发送端应对非 2xx/超时进行重试。由于本项目不做去重，发送方重试可能形成重复记录，按需求原样保留。
 - 建议使用稳定磁盘、定期备份数据库，并通过 HTTPS 反向代理接入公网。
 - Public 仓库不要提交真实 Token、生产数据、数据库文件或日志。
+
+## 一键部署与 nohup 常驻运行
+
+在 Linux 服务器执行下面一条命令即可自动克隆仓库、创建虚拟环境、安装依赖、生成随机 Webhook Token，并通过 `nohup` 后台启动（默认安装到当前用户的 `~/SCC_TT`）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/miaoyongsen/SCC_TT/main/deploy.sh -o deploy.sh && bash deploy.sh install
+```
+
+脚本支持：
+
+```bash
+bash ~/SCC_TT/deploy.sh status   # 查看状态
+bash ~/SCC_TT/deploy.sh logs     # 实时查看日志
+bash ~/SCC_TT/deploy.sh restart # 重启
+bash ~/SCC_TT/deploy.sh stop    # 停止
+bash ~/SCC_TT/deploy.sh update  # 拉取最新代码、更新依赖并重启
+```
+
+服务 PID 保存在 `run/uvicorn.pid`，nohup 日志保存在 `logs/nohup.log`。应用日志保存在 `logs/service.log`。部署脚本默认单 Worker，避免多个进程并发写同一个 SQLite 文件。脚本会在首次部署时自动生成随机 `WEBHOOK_TOKEN`，请妥善保管 `~/SCC_TT/.env`。
