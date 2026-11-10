@@ -69,7 +69,7 @@ install_deps() {
   if [[ ! -x "$PYTHON_BIN" ]]; then
     python3 -m venv .venv || die "创建虚拟环境失败；Debian/Ubuntu 可安装 python3-venv。"
   fi
-  "$PYTHON_BIN" -m pip install --upgrade pip
+  "$PYTHON_BIN" -m pip install --upgrade "pip<25"
   "$PYTHON_BIN" -m pip install -r requirements.txt
   mkdir -p "$PID_DIR" "$LOG_DIR" "$INSTALL_DIR/data"
 }
@@ -99,7 +99,7 @@ start_service() {
       tail -n 60 "$APP_LOG" >&2 || true
       die "服务启动失败，请检查日志：$APP_LOG"
     fi
-    if command -v curl >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+    if "$PYTHON_BIN" -c 'import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0 else 1)' "$PORT"; then
       log "启动成功，PID=$pid，监听端口=$PORT"
       log "日志：$APP_LOG"
       return 0
