@@ -27,7 +27,7 @@ ensure_repo() {
     git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   else
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    git -c http.version=HTTP/1.1 clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
 }
 
