@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_URL="https://github.com/miaoyongsen/SCC_TT.git"
+REPO_URL="${SCC_TT_REPO_URL:-https://github.com/miaoyongsen/SCC_TT.git}"
 INSTALL_DIR="${SCC_TT_DIR:-$HOME/SCC_TT}"
 PID_DIR="$INSTALL_DIR/run"
 LOG_DIR="$INSTALL_DIR/logs"
@@ -148,7 +148,7 @@ usage() {
   update   拉取最新代码、更新依赖并重启
   status   查看运行状态
   logs     实时查看日志
-可通过 SCC_TT_DIR=/自定义路径 指定安装目录（默认：$HOME/SCC_TT）
+可通过 SCC_TT_DIR=/自定义路径 指定安装目录（默认：$HOME/SCC_TT）\n可通过 SCC_TT_REPO_URL=仓库克隆地址指定 Git 源（默认 GitHub 官方地址）
 EOF
 }
 
