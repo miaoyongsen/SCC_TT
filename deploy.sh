@@ -16,7 +16,7 @@ die() { printf '[SCC_TT] ERROR: %s\n' "$*" >&2; exit 1; }
 ensure_repo() {
   command -v git >/dev/null 2>&1 || die "未安装 git，请先安装 git。"
   if [[ -d "$INSTALL_DIR/.git" ]]; then
-    git -c http.version=HTTP/1.1 -C "$INSTALL_DIR" pull --ff-only
+    git -C "$INSTALL_DIR" pull --ff-only
   elif [[ -e "$INSTALL_DIR" ]]; then
     if [[ -d "$INSTALL_DIR" ]] && [[ -z "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
       rmdir "$INSTALL_DIR"
@@ -24,7 +24,7 @@ ensure_repo() {
       die "$INSTALL_DIR 已存在但不是 Git 仓库且目录非空，请检查目录或设置 SCC_TT_DIR。"
     fi
     mkdir -p "$(dirname "$INSTALL_DIR")"
-    git -c http.version=HTTP/1.1 clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   else
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git -c http.version=HTTP/1.1 clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
