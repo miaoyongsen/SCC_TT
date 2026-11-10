@@ -1,1 +1,4 @@
-#!/usr/bin/env bash\nset -euo pipefail\ncd "$(dirname "$0")"\npython3 -m venv .venv\n. .venv/bin/activate\npython -m pip install --upgrade pip\npip install -r requirements.txt\nif [[ ! -f .env ]]; then cp .env.example .env; echo '已生成 .env，请设置 WEBHOOK_TOKEN 后重新运行。'; exit 1; fi\nset -a\nsource .env\nset +a\nexec uvicorn app.main:app --host "${HOST:-0.0.0.0}" --port "${PORT:-8081}" --workers 1\n
+#!/usr/bin/env bash
+set -Eeuo pipefail
+cd "$(dirname "$0")"
+exec bash ./deploy.sh install "$@"
