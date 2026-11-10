@@ -16,18 +16,17 @@
 
 ## Linux 部署
 
+支持 **Python 3.9**，不需要升级 Python。部署脚本会固定安装兼容 Python 3.9 的 FastAPI/Uvicorn 版本。
+
+一键部署（自动克隆、创建虚拟环境、安装依赖、生成 Token、nohup 后台启动）：
+
 ```bash
-git clone https://github.com/miaoyongsen/SCC_TT.git
-cd SCC_TT
-cp .env.example .env
-# 编辑 .env，设置 WEBHOOK_TOKEN 为随机长密钥
-chmod +x run.sh
-./run.sh
+curl -fsSL https://raw.githubusercontent.com/miaoyongsen/SCC_TT/main/deploy.sh -o deploy.sh && bash deploy.sh install
 ```
 
-首次运行会创建 Python 虚拟环境并安装依赖。SQLite 是 Python 标准库，无需安装数据库服务。
+默认安装到 `~/SCC_TT`。SQLite 是 Python 标准库，无需安装数据库服务。
 
-默认数据库：`data/webhook.db`；日志：`logs/service.log`。
+默认数据库：`data/webhook.db`；日志：`logs/nohup.log` 和 `logs/service.log`。
 
 ## 发送示例
 
