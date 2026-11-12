@@ -83,3 +83,8 @@ bash ~/SCC_TT/deploy.sh update  # 拉取最新代码、更新依赖并重启
 ```
 
 服务 PID 保存在 `run/uvicorn.pid`，nohup 日志保存在 `logs/nohup.log`。应用日志保存在 `logs/service.log`。部署脚本默认单 Worker，避免多个进程并发写同一个 SQLite 文件。脚本会在首次部署时仅在服务器本地生成随机 `WEBHOOK_TOKEN`，保存在权限为 600 的 `~/SCC_TT/.env` 中；更新代码时会保留现有 Token。
+
+
+### 接收响应与异步入库
+
+接收接口在请求通过 Bearer Token 校验并成功进入内存队列后立即返回 HTTP 200（`ok=true, accepted=true`），SQLite 由后台批量写入线程异步持久化。若队列已满，接口返回 HTTP 503 和 `Retry-After: 2`，发送方应稍后重试。HTTP 200 表示服务已接收进队列，不代表 SQLite 事务已经提交；请通过 `logs/service.log` 查看 `SQLite batch committed` 确认落库。进程异常退出前尚未落库的内存队列数据存在丢失风险。
