@@ -187,7 +187,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="SCC_TT Webhook Receiver", version="1.1.0", lifespan=lifespan)
 
 
-@app.post("/")
+@app.post("/scc_msoc/log")
 async def receive_webhook(
     request: Request,
     authorization: Optional[str] = Header(default=None, alias="Authorization"),
