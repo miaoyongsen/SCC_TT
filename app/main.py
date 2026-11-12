@@ -190,9 +190,9 @@ app = FastAPI(title="SCC_TT Webhook Receiver", version="1.1.0", lifespan=lifespa
 @app.post("/")
 async def receive_webhook(
     request: Request,
-    x_webhook_token: Optional[str] = Header(default=None),
+    webhook_token: Optional[str] = Header(default=None, alias="Token"),
 ) -> JSONResponse:
-    if WEBHOOK_TOKEN and x_webhook_token != WEBHOOK_TOKEN:
+    if WEBHOOK_TOKEN and webhook_token != WEBHOOK_TOKEN:
         raise HTTPException(status_code=401, detail="invalid webhook token")
 
     body = await request.body()
