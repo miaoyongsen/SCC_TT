@@ -149,10 +149,12 @@ async def database_writer() -> None:
 
         try:
             await run_in_threadpool(persist_batch, batch)
-        except Exception as exc:
-            logger.exception("SQLite batch write failed; rejecting %s webhook(s)", len(batch))
+        except Exception:
+            logger.exception("SQLite batch write failed for %s webhook(s)", len(batch))
             # HTTP requests are acknowledged after bounded-queue admission.
             # Keep storage failures visible in service.log for operator action.
+        else:
+            logger.info("SQLite batch committed: count=%s remaining_queue=%s", len(batch), write_queue.qsize())
         finally:
             for _ in batch:
                 write_queue.task_done()
