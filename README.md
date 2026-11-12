@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/miaoyongsen/SCC_TT/main/deploy.sh -
 ```bash
 curl -X POST http://127.0.0.1:8081/ \
   -H 'Content-Type: application/json' \
-  -H 'X-Webhook-Token: your-secret' \
+  -H 'Token: your-secret' \
   -d '{"event":"demo","value":123}'
 ```
 
