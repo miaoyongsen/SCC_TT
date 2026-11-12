@@ -15,6 +15,7 @@ from typing import AsyncIterator, List, Optional
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Header, HTTPException, Request
+from asyncio import QueueFull
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -99,7 +100,6 @@ class PendingItem:
     content: str
     received_at: str
     month: str
-    future: asyncio.Future[None]
 
 
 write_queue: asyncio.Queue[Optional[PendingItem]] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
@@ -151,14 +151,8 @@ async def database_writer() -> None:
             await run_in_threadpool(persist_batch, batch)
         except Exception as exc:
             logger.exception("SQLite batch write failed; rejecting %s webhook(s)", len(batch))
-            for item in batch:
-                if not item.future.done():
-                    item.future.set_exception(exc)
-        else:
-            # A webhook is acknowledged only after its batch transaction is committed.
-            for item in batch:
-                if not item.future.done():
-                    item.future.set_result(None)
+            # HTTP requests are acknowledged after bounded-queue admission.
+            # Keep storage failures visible in service.log for operator action.
         finally:
             for _ in batch:
                 write_queue.task_done()
@@ -214,20 +208,29 @@ async def receive_webhook(
     received_dt = now_local()
     received_at = received_dt.isoformat(timespec="milliseconds")
     month = received_dt.strftime("%Y%m")
-    future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-    item = PendingItem(content, received_at, month, future)
+    item = PendingItem(content, received_at, month)
 
+    # Acknowledge immediately after bounded-queue admission. SQLite batching runs
+    # in the background so slow disk commits do not consume the sender's HTTP
+    # response timeout. If the queue is full, return 503 so the sender can retry.
     try:
-        # Backpressure: if the bounded queue is full, wait instead of dropping payloads.
-        await write_queue.put(item)
-        await future
-        return JSONResponse(
-            status_code=200,
-            content={"ok": True, "received_at": received_at},
+        write_queue.put_nowait(item)
+    except QueueFull:
+        logger.warning(
+            "webhook queue full; rejecting request from %s",
+            request.client.host if request.client else "unknown",
         )
-    except sqlite3.Error:
-        logger.exception("failed to persist webhook payload")
-        raise HTTPException(status_code=503, detail="storage temporarily unavailable; sender should retry")
-    except Exception:
-        logger.exception("unexpected webhook receive failure")
-        raise HTTPException(status_code=503, detail="receiver temporarily unavailable; sender should retry")
+        raise HTTPException(
+            status_code=503,
+            detail="receiver queue is full; retry later",
+            headers={"Retry-After": "2"},
+        )
+
+    logger.info(
+        "webhook accepted: received_at=%s month=%s bytes=%s queue_size=%s",
+        received_at, month, len(body), write_queue.qsize(),
+    )
+    return JSONResponse(
+        status_code=200,
+        content={"ok": True, "accepted": True, "received_at": received_at},
+    )
