@@ -87,4 +87,4 @@ bash ~/SCC_TT/deploy.sh update  # 拉取最新代码、更新依赖并重启
 
 ### 接收响应与异步入库
 
-接收接口在请求通过 Bearer Token 校验并成功进入内存队列后立即返回 HTTP 200（`ok=true, accepted=true`），SQLite 由后台批量写入线程异步持久化。若队列已满，接口返回 HTTP 503 和 `Retry-After: 2`，发送方应稍后重试。HTTP 200 表示服务已接收进队列，不代表 SQLite 事务已经提交；请通过 `logs/service.log` 查看 `SQLite batch committed` 确认落库。进程异常退出前尚未落库的内存队列数据存在丢失风险。
+接口通过 Bearer Token 校验后，将请求放入有界内存队列，由后台线程批量写入 SQLite。**只有 SQLite 事务成功提交后，接口才返回 HTTP 200**（包含 `persisted=true`）。如果数据库写入失败，接口返回 HTTP 503，不会向发送方谎报持久化成功；队列满时会产生背压，等待队列空间。发送方应对超时或 503 进行重试，并使用事件标识处理可能发生的重复投递。日志中的 `webhook accepted` 表示进入队列，`SQLite batch committed` 表示事务提交完成。
