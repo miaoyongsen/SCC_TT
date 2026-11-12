@@ -6,7 +6,7 @@
 
 本项目**只负责接收和持久化 Webhook**，不做推送、不做事件去重、不提供查询/统计/管理 API。
 
-- 唯一业务接口：`POST /webhook`，默认监听 `0.0.0.0:8081`。
+- 唯一业务接口：`POST /`，默认监听 `0.0.0.0:8081`。
 - 原样保存 UTF-8 请求体；非 UTF-8 二进制内容以 Base64 JSON 包装保存。
 - 按北京时间自然月自动分表：`webhook_YYYYMM`。
 - 表字段只有：`id`、`content`、`received_at`。
@@ -18,7 +18,7 @@
 
 支持 **Python 3.9**，不需要升级 Python。部署脚本会固定安装兼容 Python 3.9 的 FastAPI/Uvicorn 版本。
 
-一键部署（自动克隆、创建虚拟环境、安装依赖、生成 Token、nohup 后台启动）：
+一键部署（自动克隆、创建虚拟环境、安装依赖、在服务器本地生成 Token、nohup 后台启动）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/miaoyongsen/SCC_TT/main/deploy.sh -o deploy.sh && bash deploy.sh install
@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/miaoyongsen/SCC_TT/main/deploy.sh -
 ## 发送示例
 
 ```bash
-curl -X POST http://127.0.0.1:8081/webhook \
+curl -X POST http://127.0.0.1:8081/ \
   -H 'Content-Type: application/json' \
   -H 'X-Webhook-Token: your-secret' \
   -d '{"event":"demo","value":123}'
@@ -48,7 +48,7 @@ curl -X POST http://127.0.0.1:8081/webhook \
 见 `.env.example`：
 
 - `PORT`：监听端口，默认 8081。
-- `WEBHOOK_TOKEN`：可选接收密钥；生产环境务必设置。
+- `WEBHOOK_TOKEN`：部署时在服务器本地生成并写入 `.env`；不会从 GitHub 下载，也不会提交到仓库。
 - `MAX_BODY_BYTES`：单个请求最大字节数，默认 10 MiB。
 - `QUEUE_MAX_SIZE`：内存队列上限，默认 5000。
 - `BATCH_SIZE`：单次批量写入最大条数，默认 200。
@@ -66,7 +66,7 @@ curl -X POST http://127.0.0.1:8081/webhook \
 
 ## 一键部署与 nohup 常驻运行
 
-在 Linux 服务器执行下面一条命令即可自动克隆仓库、创建虚拟环境、安装依赖、生成随机 Webhook Token，并通过 `nohup` 后台启动（默认安装到当前用户的 `~/SCC_TT`）：
+在 Linux 服务器执行下面一条命令即可自动克隆仓库、创建虚拟环境、安装依赖、在服务器本地生成随机 Webhook Token，并通过 `nohup` 后台启动（默认安装到当前用户的 `~/SCC_TT`）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/miaoyongsen/SCC_TT/main/deploy.sh -o deploy.sh && bash deploy.sh install
@@ -82,4 +82,4 @@ bash ~/SCC_TT/deploy.sh stop    # 停止
 bash ~/SCC_TT/deploy.sh update  # 拉取最新代码、更新依赖并重启
 ```
 
-服务 PID 保存在 `run/uvicorn.pid`，nohup 日志保存在 `logs/nohup.log`。应用日志保存在 `logs/service.log`。部署脚本默认单 Worker，避免多个进程并发写同一个 SQLite 文件。脚本会在首次部署时自动生成随机 `WEBHOOK_TOKEN`，请妥善保管 `~/SCC_TT/.env`。
+服务 PID 保存在 `run/uvicorn.pid`，nohup 日志保存在 `logs/nohup.log`。应用日志保存在 `logs/service.log`。部署脚本默认单 Worker，避免多个进程并发写同一个 SQLite 文件。脚本会在首次部署时仅在服务器本地生成随机 `WEBHOOK_TOKEN`，保存在权限为 600 的 `~/SCC_TT/.env` 中；更新代码时会保留现有 Token。
