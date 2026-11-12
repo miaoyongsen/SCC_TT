@@ -34,15 +34,25 @@ ensure_repo() {
 ensure_env() {
   cd "$INSTALL_DIR"
 
-  # .env is created and maintained only on this server. It is never downloaded
-  # from GitHub and is excluded from Git by .gitignore.
+  # .env is created and maintained only on this server, never downloaded from GitHub.
   if [[ ! -f .env ]]; then
     cp .env.example .env
     chmod 600 .env
   fi
 
-  # Preserve an existing local token. Generate one locally if missing/blank.
-  if ! grep -Eq '^WEBHOOK_TOKEN=.+
+  # Keep an existing local token. Generate one locally if it is absent or blank.
+  if ! grep -q '^WEBHOOK_TOKEN=.' .env; then
+    "$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import secrets
+p = Path(".env")
+with p.open("a", encoding="utf-8") as f:
+    f.write(chr(10) + "WEBHOOK_TOKEN=" + secrets.token_urlsafe(48) + chr(10))
+PY
+    chmod 600 .env
+    log "已在服务器本地生成 WEBHOOK_TOKEN，仅保存在 $INSTALL_DIR/.env"
+  fi
+}
 
 load_env() {
   cd "$INSTALL_DIR"
