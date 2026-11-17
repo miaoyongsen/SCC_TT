@@ -6,10 +6,12 @@ import json
 import logging
 import os
 import re
+import time
 import sqlite3
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import AsyncIterator, List, Optional
 from zoneinfo import ZoneInfo
@@ -45,6 +47,17 @@ logging.basicConfig(
         logging.FileHandler(LOG_DIR / "service.log", encoding="utf-8"),
     ],
 )
+# Separate, rotating request log: includes errors and wrong URLs, never credentials or payloads.
+request_logger = logging.getLogger("scc_tt.requests")
+request_logger.setLevel(logging.INFO)
+request_logger.propagate = False
+request_file = RotatingFileHandler(
+    LOG_DIR / "http_requests.log", maxBytes=20 * 1024 * 1024,
+    backupCount=5, encoding="utf-8",
+)
+request_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+request_logger.addHandler(request_file)
+
 logger = logging.getLogger("scc_tt")
 
 
@@ -186,6 +199,33 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="SCC_TT Webhook Receiver", version="1.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def log_http_requests(request: Request, call_next):
+    started = time.monotonic()
+    peer = request.client
+    remote = peer.host if peer else "unknown"
+    port = peer.port if peer else "unknown"
+    # Never log Authorization, cookies, query strings, or request bodies.
+    method = request.method
+    path = request.url.path.replace("\\n", "?").replace("\\r", "?")[:500]
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    except Exception:
+        request_logger.exception(
+            "HTTP ERROR src=%s:%s method=%s path=%s elapsed_ms=%.1f",
+            remote, port, method, path, (time.monotonic() - started) * 1000,
+        )
+        raise
+    finally:
+        request_logger.info(
+            "HTTP src=%s:%s method=%s path=%s status=%s elapsed_ms=%.1f",
+            remote, port, method, path, status, (time.monotonic() - started) * 1000,
+        )
 
 
 @app.post("/scc_msoc/log")
