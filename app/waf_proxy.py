@@ -36,10 +36,20 @@ def verify_token(supplied: str) -> None:
 
 
 def validate_block_ip(value: str) -> str:
-    # Preserve valid client-supplied IP/CIDR strings; SCC validates again.
-    items = [s.strip() for s in re.split(r"[,，;；\s]+", value) if s.strip()]
+    """Reject empty or invalid entries before any SCC network request."""
+    if not value or not value.strip():
+        raise HTTPException(status_code=422, detail="block_ip cannot be empty")
+
+    # A trailing comma or two consecutive commas indicates a missing IP.
+    groups = re.split(r"[,，;；]", value)
+    if any(not group.strip() for group in groups):
+        raise HTTPException(status_code=422, detail="block_ip contains an empty IP/CIDR entry")
+
+    items = []
+    for group in groups:
+        items.extend(group.split())
     if not items:
-        raise HTTPException(status_code=422, detail="block_ip is required")
+        raise HTTPException(status_code=422, detail="block_ip cannot be empty")
     for item in items:
         try:
             ipaddress.ip_network(item, strict=False)
