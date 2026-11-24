@@ -90,6 +90,31 @@ class WafProxyTests(unittest.TestCase):
         async_client.assert_not_called()
 
     @patch("app.waf_proxy.httpx.AsyncClient")
+    def test_get_invalid_or_empty_ip_never_calls_scc(self, async_client):
+        cases = ["", " ", ",", "1.1.1.1/32,", ",1.1.1.1/32",
+                 "1.1.1.1/32,,2.2.2.2/32", "1.1.1.999/32",
+                 "1.1.1.1/33", "hello", "1.1.1.1/32,hello"]
+        for value in cases:
+            with self.subTest(value=value):
+                response = self.client.get("/waf_ip/update", params={
+                    "block_ip": value, "token": "third-party-test-token"
+                })
+                self.assertEqual(response.status_code, 422)
+        async_client.assert_not_called()
+
+    @patch("app.waf_proxy.httpx.AsyncClient")
+    def test_post_invalid_or_empty_ip_never_calls_scc(self, async_client):
+        cases = ["", "  ", "1.1.1.1/32,", ",2.2.2.2/32",
+                 "1.1.1.1/32,,2.2.2.2/32", "abc", "1.1.1.1/32,abc"]
+        for value in cases:
+            with self.subTest(value=value):
+                response = self.client.post("/waf_ip/update", json={
+                    "block_ip": value, "token": "third-party-test-token"
+                })
+                self.assertEqual(response.status_code, 422)
+        async_client.assert_not_called()
+
+    @patch("app.waf_proxy.httpx.AsyncClient")
     def test_get_multiple_ips_forwards_as_single_block_ip(self, async_client):
         fake = FakeUpstreamClient(httpx.Response(200, json={"code": 0}))
         async_client.return_value = fake
