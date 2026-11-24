@@ -9,7 +9,6 @@ import ipaddress
 import logging
 import os
 import re
-from typing import Optional
 from urllib.parse import urlsplit
 
 import httpx
@@ -99,7 +98,7 @@ async def forward(block_ip: str) -> JSONResponse:
         logger.error("WAF upstream returned non-JSON response, status=%s", response.status_code)
         raise HTTPException(status_code=502, detail="SCC returned a non-JSON response")
     # Return SCC's original JSON and HTTP status; never forward upstream headers.
-    return JSONResponse(status_code=response.status_code, content=payload)
+    return JSONResponse(status_code=response.status_code, content=payload, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/waf_ip/update")
