@@ -54,6 +54,36 @@ PY
     chmod 600 .env
     log "已在服务器本地生成 WEBHOOK_TOKEN，仅保存在 $INSTALL_DIR/.env"
   fi
+
+  # WAF public token is independent of the existing MSOC webhook token.
+  # Keep an existing nonempty WAF_TOKEN unchanged on every update.
+  if ! grep -q '^WAF_TOKEN=.' .env; then
+    "$PYTHON_BIN" - <<'PY'
+from pathlib import Path
+import secrets
+p = Path(".env")
+lines = p.read_text(encoding="utf-8").splitlines()
+token = secrets.token_urlsafe(48)
+updated = False
+for i, line in enumerate(lines):
+    if line.startswith("WAF_TOKEN="):
+        lines[i] = "WAF_TOKEN=" + token
+        updated = True
+if not updated:
+    lines.append("WAF_TOKEN=" + token)
+p.write_text(chr(10).join(lines) + chr(10), encoding="utf-8")
+PY
+    chmod 600 .env
+    log "已在服务器本地生成 WAF_TOKEN，仅保存在 $INSTALL_DIR/.env"
+  fi
+
+  # Add new outbound settings without replacing any user-provided values.
+  if ! grep -q '^SCC_API_TOKEN=' .env; then
+    printf '\nSCC_API_TOKEN=\n' >> .env
+  fi
+  if ! grep -q '^SCC_WAF_URL=' .env; then
+    printf 'SCC_WAF_URL=http://127.0.0.1:8000/api/v1/waf/requests\n' >> .env
+  fi
 }
 
 load_env() {
