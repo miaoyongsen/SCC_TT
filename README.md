@@ -91,7 +91,7 @@ bash ~/SCC_TT/deploy.sh update  # 拉取最新代码、更新依赖并重启
 
 ## WAF IP 封禁代理接口
 
-新增 `GET /waf_ip/update`（单 IP）与 `POST /waf_ip/update`（支持多 IP）。
+新增 `GET /waf_ip/update` 与 `POST /waf_ip/update`，两种方式均支持逗号分隔多个 IP/CIDR。
 SCC_TT 只负责验证客户端 WAF Token、验证 IP/CIDR 格式、请求 SCC 8000 的
 `POST /api/v1/waf/requests` 并将其 **JSON 响应和 HTTP 状态码** 直接返回调用方。
 不改动 `/scc_msoc/log`，也不向 SCC_TT 的 SQLite 写 WAF 请求。
@@ -107,11 +107,11 @@ SCC_WAF_URL=http://127.0.0.1:8000/api/v1/waf/requests
 如果 SCC 8000 不在同一台机器上，将 `SCC_WAF_URL` 改成可连通的
 SCC **内网** 地址；确保该链路不经过公开不可信网络。部署后重启 8081 服务以加载新配置。
 
-### GET（仅一个 IP）
+### GET（支持多个 IP）
 
 ```bash
 curl -G 'https://你的8081域名/waf_ip/update' \\
-  --data-urlencode 'block_ip=192.0.2.25/32' \\
+  --data-urlencode 'block_ip=192.0.2.25/32,192.0.2.26/32' \\
   --data-urlencode 'token=你在8081配置的WAF_TOKEN'
 ```
 
@@ -132,3 +132,5 @@ curl -X POST 'https://你的8081域名/waf_ip/update' \\
 - GET 会产生真实封禁动作，并且 Token 出现在 URL 中；请务必使用 HTTPS，注意负载均衡器和代理访问日志的 URL 脱敏，避免浏览器直接打开链接、自动预取或缓存。
 - 8081 自身的 HTTP 请求日志不会记录 query string 或请求体；不会记录这两个 Token。
 - 请限制 `/waf_ip/update` 的公网来源、调用频率，并保证 `SCC_API_TOKEN` 只能被服务器进程读取。
+
+已移除 tcpdump 自动抓包及 NETWORK_DEBUG 配置。常规 HTTP 请求日志继续写入 `logs/http_requests.log`。8081 不再限制 IP 条目数为 100，但单次请求仍受 `block_ip` 20,000 字符校验和 HTTP URL/请求体实际长度限制；SCC 8000 也有相同的 20,000 字符字段限制。
