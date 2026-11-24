@@ -7,8 +7,6 @@ PID_DIR="$INSTALL_DIR/run"
 LOG_DIR="$INSTALL_DIR/logs"
 PID_FILE="$PID_DIR/uvicorn.pid"
 APP_LOG="$LOG_DIR/nohup.log"
-NETWORK_LOG="$LOG_DIR/network.log"
-CAPTURE_PID_FILE="$PID_DIR/tcpdump.pid"
 PYTHON_BIN="$INSTALL_DIR/.venv/bin/python"
 APP_MODULE="app.main:app"
 
@@ -116,44 +114,16 @@ install_deps() {
   mkdir -p "$PID_DIR" "$LOG_DIR" "$INSTALL_DIR/data"
 }
 
-start_capture() {
-  # tcpdump captures network metadata only (no payload, token or JSON body).
-  # Requires tcpdump and CAP_NET_RAW/root; service remains available if missing.
-  [[ "${NETWORK_DEBUG:-1}" == "1" ]] || return 0
-  if ! command -v tcpdump >/dev/null 2>&1; then
-    log "TCP 抓包未启动：未安装 tcpdump；可安装 tcpdump 后 restart。HTTP 请求日志照常记录。"
-    return 0
+# Clean up tcpdump left by older deployments; never start it again.
+cleanup_legacy_capture() {
+  local legacy_pid_file="$PID_DIR/tcpdump.pid"
+  [[ -f "$legacy_pid_file" ]] || return 0
+  local pid
+  pid="$(cat "$legacy_pid_file" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && ps -p "$pid" -o args= 2>/dev/null | grep -Fq 'tcpdump '; then
+    kill "$pid" 2>/dev/null || true
   fi
-  if [[ -f "$CAPTURE_PID_FILE" ]]; then
-    local prior
-    prior="$(cat "$CAPTURE_PID_FILE" 2>/dev/null || true)"
-    if [[ "$prior" =~ ^[0-9]+$ ]] && kill -0 "$prior" 2>/dev/null; then
-      return 0
-    fi
-    rm -f "$CAPTURE_PID_FILE"
-  fi
-  # -p: avoid promiscuous mode; -l: line buffered; -nn: no name lookups;
-  # -s 96: packet headers only. Output is text without hex/payload dumps.
-  nohup tcpdump -i any -p -nn -tttt -l -s 96 \
-    "tcp and dst port $PORT" >> "$NETWORK_LOG" 2>&1 < /dev/null &
-  local capture_pid=$!
-  sleep 0.2
-  if kill -0 "$capture_pid" 2>/dev/null; then
-    echo "$capture_pid" > "$CAPTURE_PID_FILE"
-    log "TCP 流量日志：$NETWORK_LOG（只记录目标端口 $PORT 的入站包头）"
-  else
-    log "TCP 抓包启动失败，请检查 $NETWORK_LOG；HTTP 请求日志照常记录。"
-  fi
-}
-
-stop_capture() {
-  [[ -f "$CAPTURE_PID_FILE" ]] || return 0
-  local capture_pid
-  capture_pid="$(cat "$CAPTURE_PID_FILE" 2>/dev/null || true)"
-  if [[ "$capture_pid" =~ ^[0-9]+$ ]]; then
-    kill "$capture_pid" 2>/dev/null || true
-  fi
-  rm -f "$CAPTURE_PID_FILE"
+  rm -f "$legacy_pid_file"
 }
 
 start_service() {
@@ -165,7 +135,6 @@ start_service() {
 
   if is_running; then
     log "服务已经运行，PID=$(cat "$PID_FILE")"
-    start_capture
     return 0
   fi
   rm -f "$PID_FILE"
@@ -186,8 +155,7 @@ start_service() {
       log "启动成功，PID=$pid，监听端口=$PORT"
       log "日志：$APP_LOG"
       log "HTTP 请求日志：$LOG_DIR/http_requests.log"
-      start_capture
-      return 0
+        return 0
     fi
     sleep 1
   done
@@ -196,7 +164,7 @@ start_service() {
 }
 
 stop_service() {
-  stop_capture
+  cleanup_legacy_capture
   if ! is_running; then
     rm -f "$PID_FILE"
     log "服务当前未运行。"
@@ -227,7 +195,7 @@ usage() {
   restart  重启服务
   update   拉取最新代码、更新依赖并重启
   status   查看运行状态
-  logs     实时查看日志（HTTP：logs/http_requests.log；TCP：logs/network.log）
+  logs     实时查看日志（HTTP：logs/http_requests.log）
 可通过 SCC_TT_DIR=/自定义路径 指定安装目录（默认：$HOME/SCC_TT）\n可通过 SCC_TT_REPO_URL=仓库克隆地址指定 Git 源（默认 GitHub 官方地址）
 EOF
 }
