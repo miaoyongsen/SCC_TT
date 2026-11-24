@@ -76,18 +76,31 @@ class WafProxyTests(unittest.TestCase):
         })
 
     @patch("app.waf_proxy.httpx.AsyncClient")
-    def test_rejects_wrong_token_and_multiple_ip_get(self, async_client):
+    def test_rejects_wrong_token_and_invalid_ip(self, async_client):
         wrong = self.client.get("/waf_ip/update", params={
             "block_ip": "192.0.2.25",
             "token": "wrong",
         })
         self.assertEqual(wrong.status_code, 401)
         multiple = self.client.get("/waf_ip/update", params={
-            "block_ip": "192.0.2.25,192.0.2.26",
+            "block_ip": "not-an-ip",
             "token": "third-party-test-token",
         })
         self.assertEqual(multiple.status_code, 422)
         async_client.assert_not_called()
+
+    @patch("app.waf_proxy.httpx.AsyncClient")
+    def test_get_multiple_ips_forwards_as_single_block_ip(self, async_client):
+        fake = FakeUpstreamClient(httpx.Response(200, json={"code": 0}))
+        async_client.return_value = fake
+        response = self.client.get("/waf_ip/update", params={
+            "block_ip": "192.0.2.25/32,192.0.2.26/32,192.0.2.27/32",
+            "token": "third-party-test-token",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(fake.calls[0][1]["json"], {
+            "block_ip": "192.0.2.25/32,192.0.2.26/32,192.0.2.27/32"
+        })
 
     @patch("app.waf_proxy.httpx.AsyncClient")
     def test_timeout_does_not_retry(self, async_client):

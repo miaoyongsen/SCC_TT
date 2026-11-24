@@ -20,7 +20,6 @@ logger = logging.getLogger("scc_tt.waf")
 router = APIRouter()
 
 DEFAULT_SCC_WAF_URL = "http://127.0.0.1:8000/api/v1/waf/requests"
-MAX_IP_ITEMS = 100
 
 
 class WafBlockPayload(BaseModel):
@@ -36,15 +35,11 @@ def verify_token(supplied: str) -> None:
         raise HTTPException(status_code=401, detail="invalid WAF token")
 
 
-def validate_block_ip(value: str, *, single: bool = False) -> str:
+def validate_block_ip(value: str) -> str:
     # Preserve valid client-supplied IP/CIDR strings; SCC validates again.
     items = [s.strip() for s in re.split(r"[,，;；\s]+", value) if s.strip()]
     if not items:
         raise HTTPException(status_code=422, detail="block_ip is required")
-    if single and len(items) != 1:
-        raise HTTPException(status_code=422, detail="GET accepts exactly one IP/CIDR")
-    if len(items) > MAX_IP_ITEMS:
-        raise HTTPException(status_code=422, detail="too many IP/CIDR entries (max 100)")
     for item in items:
         try:
             ipaddress.ip_network(item, strict=False)
@@ -107,7 +102,7 @@ async def waf_get(
     token: str = Query(..., min_length=1),
 ):
     verify_token(token)
-    return await forward(validate_block_ip(block_ip, single=True))
+    return await forward(validate_block_ip(block_ip))
 
 
 @router.post("/waf_ip/update")
