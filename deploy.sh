@@ -155,7 +155,7 @@ start_service() {
       log "启动成功，PID=$pid，监听端口=$PORT"
       log "日志：$APP_LOG"
       log "HTTP 请求日志：$LOG_DIR/http_requests.log"
-        return 0
+      return 0
     fi
     sleep 1
   done
