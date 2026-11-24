@@ -6,7 +6,7 @@
 
 本项目**只负责接收和持久化 Webhook**，不做推送、不做事件去重、不提供查询/统计/管理 API。
 
-- 唯一业务接口：`POST /scc_msoc/log`，默认监听 `0.0.0.0:8081`。
+- 日志接收接口：`POST /scc_msoc/log`，默认监听 `0.0.0.0:8081`；另提供独立的 WAF 封禁转发接口。
 - 原样保存 UTF-8 请求体；非 UTF-8 二进制内容以 Base64 JSON 包装保存。
 - 按北京时间自然月自动分表：`webhook_YYYYMM`。
 - 表字段只有：`id`、`content`、`received_at`。
@@ -88,3 +88,47 @@ bash ~/SCC_TT/deploy.sh update  # 拉取最新代码、更新依赖并重启
 ### 接收响应与异步入库
 
 接口通过 Bearer Token 校验后，将请求放入有界内存队列，由后台线程批量写入 SQLite。**只有 SQLite 事务成功提交后，接口才返回 HTTP 200**（包含 `persisted=true`）。如果数据库写入失败，接口返回 HTTP 503，不会向发送方谎报持久化成功；队列满时会产生背压，等待队列空间。发送方应对超时或 503 进行重试，并使用事件标识处理可能发生的重复投递。日志中的 `webhook accepted` 表示进入队列，`SQLite batch committed` 表示事务提交完成。
+
+## WAF IP 封禁代理接口
+
+新增 `GET /waf_ip/update`（单 IP）与 `POST /waf_ip/update`（支持多 IP）。
+SCC_TT 只负责验证客户端 WAF Token、验证 IP/CIDR 格式、请求 SCC 8000 的
+`POST /api/v1/waf/requests` 并将其 **JSON 响应和 HTTP 状态码** 直接返回调用方。
+不改动 `/scc_msoc/log`，也不向 SCC_TT 的 SQLite 写 WAF 请求。
+
+配置在 **8081 所在服务器** 的本地 `.env`（永远不要提交真实 Token 到 GitHub）：
+
+```ini
+WAF_TOKEN=由deploy.sh首次或更新时自动生成的公网侧Token
+SCC_API_TOKEN=填写SCC_8000的backend/.env中的API_TOKEN
+SCC_WAF_URL=http://127.0.0.1:8000/api/v1/waf/requests
+```
+
+如果 SCC 8000 不在同一台机器上，将 `SCC_WAF_URL` 改成可连通的
+SCC **内网** 地址；确保该链路不经过公开不可信网络。部署后重启 8081 服务以加载新配置。
+
+### GET（仅一个 IP）
+
+```bash
+curl -G 'https://你的8081域名/waf_ip/update' \\
+  --data-urlencode 'block_ip=192.0.2.25/32' \\
+  --data-urlencode 'token=你在8081配置的WAF_TOKEN'
+```
+
+### POST（一个或多个 IP）
+
+```bash
+curl -X POST 'https://你的8081域名/waf_ip/update' \\
+  -H 'Content-Type: application/json' \\
+  -d '{"block_ip":"192.0.2.25/32,192.0.2.26/32","token":"你在8081配置的WAF_TOKEN"}'
+```
+
+成功时返回 SCC 原始 JSON，例如 `{"code":0,"data":{"client_request_id":"scc_is_202611240001","status":"已提交，待回执", ...}}`。
+其中「已提交，待回执」仅表示 SCC 已提交封禁申请，不表示 WAF 已完成封禁。
+
+- 无效客户端 Token：401；缺少 Token / IP 或 IP 格式错误：422；未配置服务端 Token：503。
+- SCC 返回业务错误：保留 SCC 的 HTTP 状态和 JSON 内容。
+- SCC 无法连接：502；等待 SCC 超时：504（**结果可能未知**，禁止盲目自动重试，避免重复封禁单）。
+- GET 会产生真实封禁动作，并且 Token 出现在 URL 中；请务必使用 HTTPS，注意负载均衡器和代理访问日志的 URL 脱敏，避免浏览器直接打开链接、自动预取或缓存。
+- 8081 自身的 HTTP 请求日志不会记录 query string 或请求体；不会记录这两个 Token。
+- 请限制 `/waf_ip/update` 的公网来源、调用频率，并保证 `SCC_API_TOKEN` 只能被服务器进程读取。

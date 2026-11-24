@@ -200,6 +200,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="SCC_TT Webhook Receiver", version="1.1.0", lifespan=lifespan)
 
+from .waf_proxy import router as waf_router
+app.include_router(waf_router)
+
 
 @app.middleware("http")
 async def log_http_requests(request: Request, call_next):
